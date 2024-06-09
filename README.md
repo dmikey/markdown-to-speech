@@ -61,8 +61,9 @@ ffmpeg -version
 
 1. Clone or download the repository to your local machine.
 2. Open a terminal or command prompt and navigate to the project directory.
-3. Run the script `run_tts.sh` (for Linux) or `run_tts.bat` (for Windows).
-4. Follow the on-screen instructions to select an option:
+3. Run the script `run_tts.sh` (for Linux) or `run_tts.bat` (for Windows). 
+   Under Windows it is also possible to double click the `run_tts.bat`. 
+5. Follow the on-screen instructions to select an option:
     - Option 1: Run `tts.py` to convert markdown files to spoken audio.
     - Option 2: Exit the script.
 

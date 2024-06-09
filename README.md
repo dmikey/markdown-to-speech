@@ -45,6 +45,10 @@ TTS (Text-to-Speech) is a Python script designed to convert markdown files into 
    - Under "System variables," find the "Path" variable and click "Edit."
    - Add the path to the `bin` directory of ffmpeg (e.g., `C:\ffmpeg\bin`) to the list of paths.
    - Click "OK" to save the changes.
+4. To check if ffmpeg is added to the PATH, open a command prompt and type:
+```
+ffmpeg -version
+```
 
 #### Linux:
 1. Install ffmpeg using your package manager. For example, on Debian-based systems (like Ubuntu), you can use:
@@ -73,7 +77,3 @@ TTS (Text-to-Speech) is a Python script designed to convert markdown files into 
 ## Contributors
 
 - [@bjarnepw](https://github.com/bjarnepw)
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

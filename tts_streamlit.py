@@ -5,6 +5,11 @@ import os
 import tempfile
 from bs4 import BeautifulSoup
 import time
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
 # Supported languages
 LANGUAGES = {
@@ -34,6 +39,49 @@ SIGNS = {
     "Square Brackets ([])": "[]",
     "Parentheses (())": "()",
 }
+
+def optimize_for_speech(content, api_key):
+    """Optimize markdown content for better speech synthesis using OpenAI GPT-4o"""
+    if not OPENAI_AVAILABLE:
+        st.error("OpenAI library not installed. Run: pip install openai")
+        return content
+    
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        
+        prompt = """You are an expert at converting written text to speech-friendly format. 
+
+Please optimize the following markdown content for text-to-speech conversion by:
+1. Expanding abbreviations and acronyms 
+2. Converting numbers to written form (e.g., "123" to "one hundred twenty-three")
+3. Adding pronunciation guides for technical terms in parentheses
+4. Converting symbols and special characters to spoken words
+5. Adding natural pauses with commas and periods
+6. Removing or converting markdown formatting that doesn't translate well to speech
+7. Making sentences flow more naturally when spoken aloud
+8. Converting URLs to "link" or describing their purpose
+9. Handling code blocks by describing what they do instead of reading code syntax
+
+Keep the core meaning and content intact, but make it sound natural when read aloud.
+
+Content to optimize:
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are an expert at optimizing text for speech synthesis."},
+                {"role": "user", "content": prompt + content}
+            ],
+            temperature=0.3,
+            max_tokens=4000
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        st.error(f"Error optimizing content with OpenAI: {str(e)}")
+        return content
 
 def clean_text(text, signs_to_exclude):
     """Remove unwanted Markdown elements by replacing them with appropriate text or removing them"""
@@ -153,6 +201,29 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         
+        # OpenAI API Key section
+        st.subheader("🤖 AI Optimization (Optional)")
+        
+        if OPENAI_AVAILABLE:
+            api_key = st.text_input(
+                "OpenAI API Key:",
+                type="password",
+                help="Enter your OpenAI API key to use GPT-4o for optimizing text for speech"
+            )
+            
+            use_openai = st.checkbox(
+                "Optimize text for speech using GPT-4o",
+                help="Use AI to make the text more speech-friendly before conversion",
+                disabled=not api_key
+            )
+        else:
+            st.warning("⚠️ OpenAI library not installed")
+            st.code("pip install openai", language="bash")
+            use_openai = False
+            api_key = None
+        
+        st.markdown("---")
+        
         # Language selection
         selected_language = st.selectbox(
             "Select Language:",
@@ -236,6 +307,17 @@ def main():
                 filename = "markdown_text.md"
             
             if content:
+                # Optimize content with OpenAI if enabled
+                if use_openai and api_key:
+                    st.subheader("🤖 AI Optimization")
+                    with st.spinner("Optimizing content for speech using GPT-4o..."):
+                        content = optimize_for_speech(content, api_key)
+                    st.success("✅ Content optimized for speech!")
+                    
+                    # Show optimized content preview
+                    with st.expander("📝 View Optimized Content"):
+                        st.text_area("Optimized Content", value=content, height=200, disabled=True)
+                
                 # Create output filename
                 base_name = os.path.splitext(filename)[0]
                 output_file = f"{base_name}.mp3"

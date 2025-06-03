@@ -3,8 +3,15 @@ import markdown
 from gtts import gTTS
 import os
 import tempfile
+import subprocess
+import shutil
 from bs4 import BeautifulSoup
 import time
+import json
+import base64
+import socket
+import hashlib
+from cryptography.fernet import Fernet
 try:
     import openai
     OPENAI_AVAILABLE = True
@@ -40,14 +47,89 @@ SIGNS = {
     "Parentheses (())": "()",
 }
 
-def optimize_for_speech(content, api_key):
-    """Optimize markdown content for better speech synthesis using OpenAI GPT-4o"""
+# API Key storage functions
+def get_key_file_path():
+    """Get the path for storing the encrypted API key"""
+    return os.path.join(os.path.dirname(__file__), '.api_key.enc')
+
+def get_or_create_encryption_key():
+    """Get or create an encryption key based on machine characteristics"""
+    # Create a machine-specific key based on current working directory and hostname
+    machine_id = f"{socket.gethostname()}_{os.getcwd()}"
+    key_seed = hashlib.sha256(machine_id.encode()).digest()
+    return base64.urlsafe_b64encode(key_seed)
+
+def save_api_key(api_key):
+    """Save the API key encrypted to a local file"""
+    try:
+        encryption_key = get_or_create_encryption_key()
+        fernet = Fernet(encryption_key)
+        encrypted_key = fernet.encrypt(api_key.encode())
+        
+        key_file = get_key_file_path()
+        with open(key_file, 'wb') as f:
+            f.write(encrypted_key)
+        return True
+    except Exception as e:
+        st.error(f"Error saving API key: {str(e)}")
+        return False
+
+def load_api_key():
+    """Load and decrypt the API key from the local file"""
+    try:
+        key_file = get_key_file_path()
+        if not os.path.exists(key_file):
+            return None
+        
+        encryption_key = get_or_create_encryption_key()
+        fernet = Fernet(encryption_key)
+        
+        with open(key_file, 'rb') as f:
+            encrypted_key = f.read()
+        
+        decrypted_key = fernet.decrypt(encrypted_key).decode()
+        return decrypted_key
+    except Exception as e:
+        # If decryption fails, remove the corrupted file
+        key_file = get_key_file_path()
+        if os.path.exists(key_file):
+            try:
+                os.remove(key_file)
+            except:
+                pass
+        return None
+
+def delete_stored_api_key():
+    """Delete the stored API key file"""
+    try:
+        key_file = get_key_file_path()
+        if os.path.exists(key_file):
+            os.remove(key_file)
+        return True
+    except Exception as e:
+        st.error(f"Error deleting stored API key: {str(e)}")
+        return False
+
+def optimize_for_speech(content, api_key, progress_callback=None):
+    """Optimize markdown content for better speech synthesis using OpenAI GPT-4o with chunking"""
     if not OPENAI_AVAILABLE:
         st.error("OpenAI library not installed. Run: pip install openai")
         return content
     
     try:
         client = openai.OpenAI(api_key=api_key)
+        
+        # Calculate chunk size (aim for ~3000 characters to leave room for prompt)
+        max_chunk_size = 3000
+        content_chunks = []
+        
+        # Split content into chunks
+        for i in range(0, len(content), max_chunk_size):
+            chunk = content[i:i + max_chunk_size]
+            content_chunks.append(chunk)
+        
+        total_chunks = len(content_chunks)
+        optimized_chunks = []
         
         prompt = """You are an expert at converting written text to speech-friendly format. 
 
@@ -63,21 +145,36 @@ Please optimize the following markdown content for text-to-speech conversion by:
 9. Handling code blocks by describing what they do instead of reading code syntax
 
 Keep the core meaning and content intact, but make it sound natural when read aloud.
+Return ONLY the optimized text without any additional commentary.
 
 Content to optimize:
 """
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are an expert at optimizing text for speech synthesis."},
-                {"role": "user", "content": prompt + content}
-            ],
-            temperature=0.3,
-            max_tokens=4000
-        )
+        # Process each chunk
+        for i, chunk in enumerate(content_chunks):
+            if progress_callback:
+                progress = int((i / total_chunks) * 100)
+                progress_callback(f"Optimizing chunk {i + 1} of {total_chunks}...", progress)
+            
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are an expert at optimizing text for speech synthesis. Return only the optimized text."},
+                    {"role": "user", "content": prompt + chunk}
+                ],
+                temperature=0.3,
+                max_tokens=4000
+            )
+            
+            optimized_chunks.append(response.choices[0].message.content)
         
-        return response.choices[0].message.content
+        # Combine all optimized chunks
+        optimized_content = "\n".join(optimized_chunks)
+        
+        if progress_callback:
+            progress_callback("Optimization complete!", 100)
+        
+        return optimized_content
         
     except Exception as e:
         st.error(f"Error optimizing content with OpenAI: {str(e)}")
@@ -107,18 +204,49 @@ def clean_text(text, signs_to_exclude):
     return text
 
 def combine_audio_chunks(temp_files, output_file):
-    """Combine MP3 files using ffmpeg"""
+    """Combine MP3 files using ffmpeg with better error handling"""
     try:
-        file_list = '|'.join(temp_files)
-        command = f'ffmpeg -i "concat:{file_list}" -acodec copy "{output_file}" -y'
-        os.system(command)
-        return True
+        if len(temp_files) == 1:
+            # If only one file, just rename it
+            shutil.move(temp_files[0], output_file)
+            return True
+        
+        # Create a temporary file list for ffmpeg
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            for temp_file in temp_files:
+                f.write(f"file '{temp_file}'\n")
+            filelist_path = f.name
+        
+        try:
+            # Use ffmpeg with file list for more reliable concatenation
+            command = [
+                'ffmpeg', '-f', 'concat', '-safe', '0', '-i', filelist_path,
+                '-c', 'copy', output_file, '-y'
+            ]
+            
+            result = subprocess.run(command, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                return True
+            else:
+                st.error(f"FFmpeg error: {result.stderr}")
+                return False
+                
+        finally:
+            # Clean up the temporary file list
+            if os.path.exists(filelist_path):
+                os.remove(filelist_path)
+        
+    except FileNotFoundError:
+        st.error("FFmpeg not found. Please install FFmpeg to combine audio files.")
+        return False
     except Exception as e:
         st.error(f"Error during concatenation: {e}")
         return False
 
 def markdown_to_speech(md_file_content, output_file, lang, chunk_size, signs_to_exclude, progress_bar, status_text):
     """Convert markdown to speech with progress tracking"""
+    temp_files = []  # Initialize temp_files list outside try block
     try:
         # Update status
         status_text.text("Reading markdown content...")
@@ -148,7 +276,6 @@ def markdown_to_speech(md_file_content, output_file, lang, chunk_size, signs_to_
         progress_bar.progress(35)
         
         # Convert each chunk to speech and save as a temporary file
-        temp_files = []
         for i, chunk in enumerate(text_chunks):
             current_chunk = i + 1
             status_text.text(f"Converting chunk {current_chunk} of {total_chunks}...")
@@ -168,23 +295,50 @@ def markdown_to_speech(md_file_content, output_file, lang, chunk_size, signs_to_
         success = combine_audio_chunks(temp_files, output_file)
         
         if not success:
+            # Clean up temporary files before returning False
+            status_text.text("Cleaning up temporary files after error...")
+            for temp_file in temp_files:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except Exception:
+                        pass  # Ignore cleanup errors
             return False
         
-        # Clean up temporary files
+        # Clean up temporary files after successful combination
         status_text.text("Cleaning up temporary files...")
         progress_bar.progress(95)
+        cleanup_success = True
         for temp_file in temp_files:
             if os.path.exists(temp_file):
-                os.remove(temp_file)
+                try:
+                    os.remove(temp_file)
+                except Exception as cleanup_error:
+                    st.warning(f"Warning: Could not delete temporary file {temp_file}: {cleanup_error}")
+                    cleanup_success = False
         
         # Complete
         progress_bar.progress(100)
-        status_text.text(f"✅ Conversion complete! Audio saved as {os.path.basename(output_file)}")
+        if cleanup_success:
+            status_text.text(f"✅ Conversion complete! Audio saved as {os.path.basename(output_file)}")
+        else:
+            status_text.text(f"✅ Conversion complete! Audio saved as {os.path.basename(output_file)} (some temporary files may remain)")
         return True
         
     except Exception as e:
+        # Ensure cleanup happens even if there's an error
         status_text.text(f"❌ Error during conversion: {str(e)}")
         progress_bar.progress(0)
+        
+        # Clean up any temporary files that were created
+        if temp_files:
+            for temp_file in temp_files:
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except Exception:
+                        pass  # Ignore cleanup errors during exception handling
+        
         return False
 
 def main():
@@ -205,11 +359,48 @@ def main():
         st.subheader("🤖 AI Optimization (Optional)")
         
         if OPENAI_AVAILABLE:
-            api_key = st.text_input(
-                "OpenAI API Key:",
-                type="password",
-                help="Enter your OpenAI API key to use GPT-4o for optimizing text for speech"
-            )
+            # Load stored API key
+            stored_api_key = load_api_key()
+            
+            # Initialize session state for API key
+            if 'api_key_input' not in st.session_state:
+                st.session_state.api_key_input = stored_api_key or ""
+            
+            # API Key input
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                api_key = st.text_input(
+                    "OpenAI API Key:",
+                    value=st.session_state.api_key_input,
+                    type="password",
+                    help="Enter your OpenAI API key to use GPT-4o for optimizing text for speech",
+                    key="api_key_field"
+                )
+            
+            with col2:
+                # Save button
+                if st.button("💾", help="Save API key"):
+                    if api_key.strip():
+                        if save_api_key(api_key.strip()):
+                            st.success("✅ Saved!")
+                            st.session_state.api_key_input = api_key.strip()
+                        else:
+                            st.error("❌ Failed to save")
+                    else:
+                        st.warning("⚠️ Enter a key first")
+            
+            # Delete stored key option
+            if stored_api_key:
+                if st.button("🗑️ Delete Stored Key", help="Remove saved API key"):
+                    if delete_stored_api_key():
+                        st.success("✅ API key deleted")
+                        st.session_state.api_key_input = ""
+                        st.rerun()
+            
+            # Show status
+            if stored_api_key:
+                st.info("🔐 API key loaded from storage")
             
             use_openai = st.checkbox(
                 "Optimize text for speech using GPT-4o",
@@ -307,16 +498,59 @@ def main():
                 filename = "markdown_text.md"
             
             if content:
+                # Store original content for comparison
+                original_content = content
+                
                 # Optimize content with OpenAI if enabled
                 if use_openai and api_key:
                     st.subheader("🤖 AI Optimization")
+                    
+                    # Show optimization progress
+                    optimization_progress = st.progress(0)
+                    optimization_status = st.empty()
+                    
+                    def update_optimization_progress(status, progress):
+                        optimization_status.text(status)
+                        optimization_progress.progress(progress)
+                    
+                    # Perform optimization
                     with st.spinner("Optimizing content for speech using GPT-4o..."):
-                        content = optimize_for_speech(content, api_key)
+                        content = optimize_for_speech(content, api_key, update_optimization_progress)
+                    
                     st.success("✅ Content optimized for speech!")
                     
-                    # Show optimized content preview
-                    with st.expander("📝 View Optimized Content"):
-                        st.text_area("Optimized Content", value=content, height=200, disabled=True)
+                    # Show comparison of original vs optimized content
+                    st.subheader("📝 Content Comparison")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Original Content:**")
+                        st.text_area("Original", value=original_content[:1000] + "..." if len(original_content) > 1000 else original_content, height=200, disabled=True, key="original_preview")
+                    
+                    with col2:
+                        st.markdown("**Optimized Content:**")
+                        st.text_area("Optimized", value=content[:1000] + "..." if len(content) > 1000 else content, height=200, disabled=True, key="optimized_preview")
+                    
+                    # Show full optimized content in an expander
+                    with st.expander("📖 View Full Optimized Content"):
+                        st.text_area("Complete Optimized Content", value=content, height=400, disabled=True, key="full_optimized")
+                    
+                    # Ask user if they want to proceed
+                    st.info("📋 Review the optimized content above. Click 'Proceed with Conversion' to continue or edit the content manually below.")
+                    
+                    # Allow manual editing of optimized content
+                    content = st.text_area(
+                        "Edit Optimized Content (Optional):",
+                        value=content,
+                        height=200,
+                        help="You can make manual adjustments to the optimized content before conversion",
+                        key="manual_edit"
+                    )
+                    
+                    # Proceed button
+                    if not st.button("🎵 Proceed with Conversion", type="secondary", use_container_width=True):
+                        st.stop()  # Stop execution until user clicks proceed
                 
                 # Create output filename
                 base_name = os.path.splitext(filename)[0]

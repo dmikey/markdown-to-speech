@@ -1,2 +1,4 @@
 .venv/
 *.enc
+.optimization_cache/
+*.mp3

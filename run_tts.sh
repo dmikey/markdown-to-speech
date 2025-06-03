@@ -1,17 +1,11 @@
 #!/bin/bash
 
 source .venv/bin/activate
-echo "Select an option:"
-echo "1: Run tts.py"
-echo "2: Exit"
-read -p "Enter your choice (1/2): " choice
+pip install -r requirements.txt > /dev/null 2>&1
 
-if [ "$choice" = "1" ]; then
-    python tts.py
-    read -p "Press Enter to continue..."
-elif [ "$choice" = "2" ]; then
-    exit
-else
-    echo "Invalid choice. Please enter 1 or 2."
-    read -p "Press Enter to continue..."
-fi
+echo "Starting Markdown to Speech Converter (Streamlit)..."
+echo "The app will open in your browser at http://localhost:8501"
+echo "Press Ctrl+C to stop the application"
+echo ""
+
+streamlit run tts_streamlit.py

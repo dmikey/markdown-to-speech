@@ -332,16 +332,43 @@ def clean_text(text, signs_to_exclude):
 def combine_audio_chunks(temp_files, output_file):
     """Combine MP3 files using ffmpeg with better error handling"""
     try:
+        logger.info(f"Starting audio combination with {len(temp_files)} files")
+        logger.info(f"Output file: {output_file}")
+        
+        # Log all temp files and verify they exist
+        for i, temp_file in enumerate(temp_files):
+            logger.info(f"Temp file {i}: {temp_file}")
+            if os.path.exists(temp_file):
+                file_size = os.path.getsize(temp_file)
+                logger.info(f"  - Exists: YES, Size: {file_size} bytes")
+            else:
+                logger.error(f"  - Exists: NO - FILE MISSING!")
+                return False
+        
         if len(temp_files) == 1:
-            # If only one file, just rename it
-            shutil.move(temp_files[0], output_file)
+            # If only one file, just copy it
+            logger.info("Only one file, copying directly...")
+            shutil.copy2(temp_files[0], output_file)
             return True
         
         # Create a temporary file list for ffmpeg
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
             for temp_file in temp_files:
-                f.write(f"file '{temp_file}'\n")
+                # Use absolute paths and escape any special characters
+                abs_path = os.path.abspath(temp_file)
+                f.write(f"file '{abs_path}'\n")
+                logger.info(f"Added to concat list: {abs_path}")
             filelist_path = f.name
+        
+        logger.info(f"Created FFmpeg file list: {filelist_path}")
+        
+        # Read back the file list for debugging
+        try:
+            with open(filelist_path, 'r') as f:
+                file_list_content = f.read()
+                logger.info(f"File list content:\n{file_list_content}")
+        except Exception as e:
+            logger.warning(f"Could not read back file list: {e}")
         
         try:
             # Use ffmpeg with file list for more reliable concatenation
@@ -350,10 +377,24 @@ def combine_audio_chunks(temp_files, output_file):
                 '-c', 'copy', output_file, '-y'
             ]
             
+            logger.info(f"Running FFmpeg command: {' '.join(command)}")
             result = subprocess.run(command, capture_output=True, text=True)
             
+            logger.info(f"FFmpeg return code: {result.returncode}")
+            if result.stdout:
+                logger.info(f"FFmpeg stdout: {result.stdout}")
+            if result.stderr:
+                logger.info(f"FFmpeg stderr: {result.stderr}")
+            
             if result.returncode == 0:
-                return True
+                # Verify output file was created
+                if os.path.exists(output_file):
+                    output_size = os.path.getsize(output_file)
+                    logger.info(f"Success! Output file created: {output_file}, size: {output_size} bytes")
+                    return True
+                else:
+                    logger.error("FFmpeg returned success but output file doesn't exist!")
+                    return False
             else:
                 st.error(f"FFmpeg error: {result.stderr}")
                 return False
@@ -362,12 +403,15 @@ def combine_audio_chunks(temp_files, output_file):
             # Clean up the temporary file list
             if os.path.exists(filelist_path):
                 os.remove(filelist_path)
+                logger.info(f"Cleaned up file list: {filelist_path}")
         
     except FileNotFoundError:
         st.error("FFmpeg not found. Please install FFmpeg to combine audio files.")
+        logger.error("FFmpeg not found on system PATH")
         return False
     except Exception as e:
         st.error(f"Error during concatenation: {e}")
+        logger.error(f"Exception during audio combination: {e}")
         return False
 
 def markdown_to_speech(md_file_content, output_file, lang, chunk_size, signs_to_exclude, progress_bar, status_text):
@@ -427,11 +471,26 @@ def markdown_to_speech(md_file_content, output_file, lang, chunk_size, signs_to_
             
             try:
                 tts = gTTS(chunk, lang=lang)
-                temp_file = f"{output_file}_part_{i}.mp3"
-                logger.info(f"Creating temporary file: {temp_file}")
-                tts.save(temp_file)
-                temp_files.append(temp_file)
-                logger.info(f"Chunk {current_chunk} saved successfully")
+                # Create temporary file in system temp directory with proper naming
+                temp_file = tempfile.NamedTemporaryFile(suffix=f"_part_{i}.mp3", delete=False)
+                temp_file_path = temp_file.name
+                temp_file.close()  # Close the file handle so gTTS can write to it
+                
+                logger.info(f"Creating temporary file: {temp_file_path}")
+                tts.save(temp_file_path)
+                temp_files.append(temp_file_path)
+                logger.info(f"Chunk {current_chunk} saved successfully to {temp_file_path}")
+                
+                # Verify the file was created and has content
+                if os.path.exists(temp_file_path):
+                    file_size = os.path.getsize(temp_file_path)
+                    logger.info(f"Temporary file {temp_file_path} created successfully, size: {file_size} bytes")
+                    if file_size == 0:
+                        logger.error(f"Warning: Temporary file {temp_file_path} is empty!")
+                else:
+                    logger.error(f"Error: Temporary file {temp_file_path} was not created!")
+                    raise Exception(f"Failed to create temporary file {temp_file_path}")
+                    
             except Exception as chunk_error:
                 logger.error(f"Error processing chunk {current_chunk}: {chunk_error}")
                 raise chunk_error
